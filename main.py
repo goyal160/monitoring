@@ -1,94 +1,70 @@
 import streamlit as st
-import pandas as pd
-import os
+from db_utils import load_data, update_noc_status, get_data_by_crossing_type, get_data_by_district
 
-# ------------------- CONFIG -------------------
-EXCEL_PATH = "Sample.xlsx"
-st.set_page_config(page_title="NOC Dashboard Spread-3", layout="wide")
+st.set_page_config(layout="wide")
+st.title("NOC Dashboard")
 
-# ------------------- SESSION STATE INIT -------------------
-for key in ["selected_type", "selected_district", "selected_status", 
-            "show_received", "show_not_received"]:
-    if key not in st.session_state:
-        st.session_state[key] = None if "show" not in key else False
+# Load initial data
+df = load_data()
 
-# ------------------- LOAD DATA -------------------
-@st.cache_data(ttl=60)
-def load_data(path):
-    return pd.read_excel(path)
+# Session state initialization
+if "clicked_type" not in st.session_state:
+    st.session_state.clicked_type = None
+if "clicked_district" not in st.session_state:
+    st.session_state.clicked_district = None
+if "clicked_status" not in st.session_state:
+    st.session_state.clicked_status = None
 
-df = load_data(EXCEL_PATH)
+# Show Crossing Types
+crossing_types = df['Type of Crossing'].dropna().unique()
+st.subheader("Type of Crossings")
+cols = st.columns(len(crossing_types))
+for i, ctype in enumerate(crossing_types):
+    count = df[df['Type of Crossing'] == ctype].shape[0]
+    if cols[i].button(f"{ctype} ({count})"):
+        st.session_state.clicked_type = ctype
+        st.session_state.clicked_district = None
+        st.session_state.clicked_status = None
 
-df.columns = df.columns.str.strip()  # Remove leading/trailing spaces
+# Show Districts if type is clicked
+if st.session_state.clicked_type:
+    filtered_df = get_data_by_crossing_type(st.session_state.clicked_type)
+    districts = filtered_df['District'].dropna().unique()
+    st.subheader(f"Districts under {st.session_state.clicked_type}")
+    cols = st.columns(len(districts))
+    for i, dist in enumerate(districts):
+        count = filtered_df[filtered_df['District'] == dist].shape[0]
+        if cols[i].button(f"{dist} ({count})"):
+            st.session_state.clicked_district = dist
+            st.session_state.clicked_status = None
 
-# ------------------- UI: TYPE OF CROSSING -------------------
-st.title("📊 NOC Dashboard")
-st.subheader("Click a Crossing Type to explore details")
+# Show NOC Status if district is clicked
+if st.session_state.clicked_district:
+    dist_df = get_data_by_district(st.session_state.clicked_district)
+    received_df = dist_df[dist_df['NOC Status'].str.lower() == 'received']
+    not_received_df = dist_df[dist_df['NOC Status'].str.lower() != 'received']
+    received_count = len(received_df)
+    not_received_count = len(not_received_df)
 
-type_counts = df['Type of Crossing'].value_counts().to_dict()
-type_cols = st.columns(len(type_counts))
-
-for i, (t, count) in enumerate(type_counts.items()):
-    if type_cols[i].button(f"🔘 {t} ({count})", key=f"type_{t}"):
-        st.session_state.selected_type = t
-        st.session_state.selected_district = None
-        st.session_state.selected_status = None
-        st.session_state.show_received = False
-        st.session_state.show_not_received = False
-
-# ------------------- UI: DISTRICTS -------------------
-if st.session_state.selected_type:
-    st.markdown(f"### 🛤️ Districts in **{st.session_state.selected_type}**")
-    filtered_df = df[df['Type of Crossing'] == st.session_state.selected_type]
-    district_counts = filtered_df['District'].value_counts().to_dict()
-    district_cols = st.columns(len(district_counts))
-
-    for i, (district, count) in enumerate(district_counts.items()):
-        if district_cols[i].button(f"🏙️ {district} ({count})", key=f"district_{district}"):
-            st.session_state.selected_district = district
-            st.session_state.selected_status = None
-            st.session_state.show_received = False
-            st.session_state.show_not_received = False
-
-# ------------------- UI: NOC STATUS -------------------
-if st.session_state.selected_district:
-    dist_df = filtered_df[filtered_df['District'] == st.session_state.selected_district]
-    received_count = (dist_df['NOC Status'].str.lower() == 'received').sum()
-    not_received_count = (dist_df['NOC Status'].str.lower() != 'received').sum()
-
-    st.markdown(f"### 📄 NOC Status in **{st.session_state.selected_district}**")
+    st.subheader(f"NOC Status in {st.session_state.clicked_district}")
     col1, col2 = st.columns(2)
 
-    with col1:
-        if st.button(f"🟢 Received ({received_count})", key="received_btn"):
-            st.session_state.show_received = not st.session_state.show_received
-            st.session_state.show_not_received = False
+    if col1.button(f"Received ({received_count})"):
+        st.session_state.clicked_status = "received"
 
-    with col2:
-        if st.button(f"🔴 Not Received ({not_received_count})", key="not_received_btn"):
-            st.session_state.show_not_received = not st.session_state.show_not_received
-            st.session_state.show_received = False
+    if col2.button(f"Not Received ({not_received_count})"):
+        st.session_state.clicked_status = "not received"
 
-    # ----------- Show Received Table -----------
-    if st.session_state.show_received:
-        received_df = dist_df[dist_df['NOC Status'].str.lower() == 'received']
-        st.markdown("#### ✅ NOCs Received")
-        st.dataframe(received_df.reset_index(drop=True), use_container_width=True)
+    if st.session_state.clicked_status == "received":
+        st.subheader("Received NOC Details")
+        st.dataframe(received_df.reset_index(drop=True))
 
-    # ----------- Show Not Received Table + Update Option -----------
-    if st.session_state.show_not_received:
-        not_received_df = dist_df[dist_df['NOC Status'].str.lower() != 'received'].copy()
-        st.markdown("#### ❌ NOCs Not Received")
-
-        for i, row in not_received_df.iterrows():
-            col1, col2 = st.columns([6, 2])
-            with col1:
-                st.write(f"📍 **{row['Area']}**")
-            with col2:
-                if st.button("Mark as Received", key=f"mark_{i}"):
-                    df.loc[(df['Type of Crossing'] == st.session_state.selected_type) &
-                           (df['District'] == st.session_state.selected_district) &
-                           (df['Area'] == row['Area']), 'NOC Status'] = "Received"
-                    df.to_excel(EXCEL_PATH, index=False)
-                    st.success(f"Marked '{row['Area']}' as Received")
-                    st.rerun()
+    elif st.session_state.clicked_status == "not received":
+        st.subheader("Not Received NOC Details")
+        for index, row in not_received_df.iterrows():
+            col1, col2 = st.columns([4, 1])
+            col1.write(f"{row['Area']}")
+            if col2.button("Mark as Received", key=f"update_{index}"):
+                update_noc_status(row['Area'])
+                st.experimental_rerun()
+        st.dataframe(not_received_df.reset_index(drop=True))
